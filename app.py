@@ -2,8 +2,26 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import logging
+import os
+import re
+import sqlite3
+import uuid
+from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
+from typing import Literal
+from urllib.request import Request, urlopen
 
+from fastapi import Depends, FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field, field_validator
+
+log = logging.getLogger("zorgkrediet")
+DB_PATH = Path(os.getenv("DATABASE_PATH", "./zorgkrediet.sqlite3"))
 ANNUAL_RATE = Decimal("0.089")
 MONTHLY_RATE = ANNUAL_RATE / Decimal(12)
 NORMS = {
@@ -15,21 +33,20 @@ NORMS = {
 CENT = Decimal("0.01")
 
 
-def cents(amount: Decimal) -> int:
-    return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def money(pence: int) -> str:
     return f"{Decimal(pence) / 100:.2f}"
 
 
-def build_schedule(principal_cents: int, months: int) -> tuple[list[dict], int, int]:
-    """Monthly fixed annuity; round each period to cents and settle the final cent exactly.
+def cents(amount: Decimal) -> int:
+    return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
-    Returns (rows, regular_payment_cents, total_repaid_cents).
-    Raises RuntimeError if the schedule does not reconcile — this is a real
-    check, not an assert (asserts are stripped under python -O).
-    """
+
+def build_schedule(principal_cents: int, months: int) -> tuple[list[dict], int, int]:
+    """Monthly fixed annuity; round each period to cents and settle the final cent exactly."""
     principal = Decimal(principal_cents) / 100
     regular = (
         principal * MONTHLY_RATE / (1 - (1 + MONTHLY_RATE) ** (-months))
@@ -64,18 +81,51 @@ def build_schedule(principal_cents: int, months: int) -> tuple[list[dict], int, 
 
 
 def determine_outcome(payment: int, room: int) -> str:
-    """
-    payment and room are both in cents.
-
-    Rules:
-      payment <= room                             → accepted
-      room > 0 and excess <= 10% of room          → referred
-      otherwise                                   → declined
-    """
     if payment <= room:
         return "accepted"
     if room > 0 and Decimal(payment - room) / Decimal(room) <= Decimal("0.10"):
         return "referred"
     return "declined"
+
+
+class Intake(BaseModel):
+    treatment: Literal["dental", "eye", "orthodontic", "other"]
+    treatment_cost_eur: Decimal = Field(ge=500, le=25000)
+    preferred_term_months: int = Field(ge=6, le=60)
+    net_monthly_income_eur: Decimal = Field(ge=0)
+    housing_costs_eur: Decimal = Field(ge=0)
+    existing_obligations_eur: Decimal = Field(ge=0)
+    household: Literal["single", "single_with_children", "couple", "couple_with_children"]
+    additional_context: str = Field(default="", max_length=4000)
+
+    @field_validator(
+        "treatment_cost_eur",
+        "net_monthly_income_eur",
+        "housing_costs_eur",
+        "existing_obligations_eur",
+    )
+    @classmethod
+    def require_cent_precision(cls, value: Decimal) -> Decimal:
+        if value.as_tuple().exponent < -2:
+            raise ValueError("Amounts must be expressed to no more than two decimal places")
+        return value
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    init_db()
+    yield
+
+
+app = FastAPI(
+    title="Zorgkrediet Intake & Assessment",
+    version="0.2.0",
+    lifespan=lifespan,
+)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 

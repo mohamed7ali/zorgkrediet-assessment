@@ -9,6 +9,27 @@ import app as api
 
 H = {"X-API-Key": "test-key-1"}
 
+def _body(**overrides):
+    body = {
+        "treatment": "dental",
+        "treatment_cost_eur": 5000,
+        "preferred_term_months": 36,
+        "net_monthly_income_eur": 4000,
+        "housing_costs_eur": 1000,
+        "existing_obligations_eur": 200,
+        "household": "single",
+        "additional_context": "",
+    }
+    body.update(overrides)
+    return body
+
+
+def _no_context(monkeypatch):
+    monkeypatch.setattr(api, "summarize_context", lambda text: {
+        "summary": "No additional context provided.",
+        "human_review": False,
+        "source": "empty",
+    })
 
 @pytest.fixture(autouse=True)
 def employee_keys(monkeypatch):
@@ -45,5 +66,13 @@ def test_affordability_boundaries():
     assert api.determine_outcome(11000, 10000) == "referred"   # exactly 10% over → referred
     assert api.determine_outcome(11001, 10000) == "declined"   # one cent over 10% → declined
     assert api.determine_outcome(1, 0) == "declined"           # zero room → declined
+
+
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-5", "10.123", "abc"])
+def test_malformed_money_is_rejected_with_422(tmp_path, monkeypatch, bad):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "x.sqlite3")
+    _no_context(monkeypatch)
+    with TestClient(api.app, headers=H) as client:
+        assert client.post("/applications", json=_body(net_monthly_income_eur=bad)).status_code == 422
 
 
