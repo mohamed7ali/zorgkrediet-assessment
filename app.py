@@ -31,7 +31,7 @@ NORMS = {
     "couple_with_children": 185000,
 }
 CENT = Decimal("0.01")
-
+CONTEXT_PROMPT_VERSION = "1"
 
 # Wording shown to applicants. The exact text and its version are written into
 # the audit trail, so a regulator can see what an applicant was told even after
@@ -182,7 +182,40 @@ def init_db() -> None:
             human_review_flag INTEGER NOT NULL,
             final_reason TEXT
         );
+        CREATE TABLE IF NOT EXISTS audit_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            application_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            previous_hash TEXT NOT NULL,
+            event_hash TEXT NOT NULL,
+            FOREIGN KEY(application_id) REFERENCES applications(id)
+        );
+        CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit_events
+        BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit_events
+        BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END;
         """)
+
+
+def _audit(c: sqlite3.Connection, app_id: str, event_type: str, payload: dict) -> None:
+    previous = c.execute(
+        "SELECT event_hash FROM audit_events WHERE application_id=? ORDER BY seq DESC LIMIT 1",
+        (app_id,),
+    ).fetchone()
+    previous_hash = previous[0] if previous else "0" * 64
+    timestamp = now_iso()
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    event_hash = hashlib.sha256(
+        f"{previous_hash}|{timestamp}|{event_type}|{app_id}|{canonical}".encode()
+    ).hexdigest()
+    c.execute(
+        "INSERT INTO audit_events"
+        "(application_id,event_type,timestamp,payload_json,previous_hash,event_hash)"
+        " VALUES(?,?,?,?,?,?)",
+        (app_id, event_type, timestamp, canonical, previous_hash, event_hash),
+    )
 
 
 QUESTIONNAIRE = {
@@ -211,7 +244,12 @@ def _fetch(application_id: str):
         ).fetchone()
         if not row:
             raise HTTPException(404, "Application not found")
-    return row, []
+        audits = c.execute(
+            "SELECT seq,event_type,timestamp,payload_json,previous_hash,event_hash "
+            "FROM audit_events WHERE application_id=? ORDER BY seq",
+            (application_id,),
+        ).fetchall()
+    return row, audits
 
 
 def _repayment(row) -> dict:
@@ -265,6 +303,23 @@ app = FastAPI(
 def health():
     with tx() as c:
         c.execute("SELECT 1 FROM applications LIMIT 1")
+        _audit(c, app_id, "application_assessed", {
+        "created_at": created,
+        "questionnaire": QUESTIONNAIRE,
+        "answers": request_record,
+        "system_outcome": system_outcome,
+        "outcome_after_context_flag": outcome,
+        "decision_basis": basis,
+        "monthly_payment_cents": payment,
+        "total_repaid_cents": total,
+        "schedule": sched,
+        "context_summary": context["summary"],
+        "human_review_flag": context["human_review"],
+        "context_source": context["source"],
+        "context_model": context.get("model"),
+        "context_prompt_version": CONTEXT_PROMPT_VERSION,   # defined in chunk 13, use "stub" for now
+        "applicant_message": applicant_message(outcome),
+    })
     return {"status": "ok"}
 
 

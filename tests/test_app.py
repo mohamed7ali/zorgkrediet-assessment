@@ -184,3 +184,75 @@ def test_term_extension_preferred_and_decline_message(tmp_path, monkeypatch):
         assert "up to 60 months" in declined["applicant_message"]
 
 
+def test_application_audit_override_and_privacy(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "test.sqlite3")
+    monkeypatch.setattr(api, "summarize_context", lambda text: {
+        "summary": "Temporary contract; review income stability.",
+        "human_review": True,
+        "source": "stub",
+    })
+    with TestClient(api.app, headers=H) as client:
+        body = {
+            "treatment": "dental",
+            "treatment_cost_eur": 5000,
+            "preferred_term_months": 36,
+            "net_monthly_income_eur": 4000,
+            "housing_costs_eur": 1000,
+            "existing_obligations_eur": 200,
+            "household": "single",
+            "additional_context": "temporary contract and sensitive diagnosis",
+        }
+        created = client.post("/applications", json=body)
+        assert created.status_code == 201, created.text
+        applicant = created.json()
+        app_id = applicant["id"]
+
+        # Applicant view must not expose internal fields
+        assert not {
+            "audit_events", "decision_basis", "answers",
+            "context_summary", "human_review_flag",
+        } & set(applicant)
+
+        dossier = client.get(f"/applications/{app_id}/dossier").json()
+        assert "sensitive diagnosis" not in json.dumps(dossier)
+        assert dossier["human_review_flag"] is True
+        assert dossier["answers"]["additional_context"] == {
+            "asked": True, "provided": True, "raw_text_retained": False,
+        }
+        assert "sensitive diagnosis" not in created.text
+        assert (
+            "Is there anything else we should know about your situation?"
+            in str(dossier["audit_events"][0]["payload"])
+        )
+        assert dossier["repayment"]["schedule"][-1]["closing_balance_eur"] == "0.00"
+        assert client.get(f"/applications/{app_id}/audit/verify").json()["valid"] is True
+
+        overridden = client.post(
+            f"/applications/{app_id}/override",
+            json={"outcome": "accepted", "reason": "Verified new supporting evidence.",
+                  "employee_id": "someone-else"},
+        )
+        assert overridden.status_code == 200
+        assert overridden.json()["outcome"] == "accepted"
+        assert len(overridden.json()["audit_events"]) == 2
+        # acting employee comes from the credential, never from the request body
+        assert overridden.json()["audit_events"][1]["payload"]["employee_id"] == "emp-1"
+        assert client.get(f"/applications/{app_id}/audit/verify").json()["checked_events"] == 2
+
+        with api._db() as db:
+            try:
+                db.execute(
+                    "UPDATE audit_events SET payload_json='{}' WHERE application_id=?",
+                    (app_id,),
+                )
+                assert False, "audit table should reject updates"
+            except Exception as exc:
+                assert "append-only" in str(exc)
+            db.execute("DROP TRIGGER audit_no_update")
+            db.execute(
+                "UPDATE audit_events SET payload_json='{}' WHERE application_id=?",
+                (app_id,),
+            )
+        assert client.get(f"/applications/{app_id}/audit/verify").json()["valid"] is False
+
+
