@@ -111,6 +111,50 @@ class Intake(BaseModel):
         return value
 
 
+def _db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+@contextmanager
+def tx(immediate: bool = False):
+    conn = _db()
+    try:
+        if immediate:
+            conn.execute("BEGIN IMMEDIATE")
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def init_db() -> None:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with tx() as c:
+        c.executescript("""
+        CREATE TABLE IF NOT EXISTS applications (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            request_json TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            system_outcome TEXT NOT NULL,
+            decision_basis TEXT NOT NULL,
+            selected_term INTEGER NOT NULL,
+            payment_cents INTEGER NOT NULL,
+            total_repaid_cents INTEGER NOT NULL,
+            schedule_json TEXT NOT NULL,
+            note_summary TEXT NOT NULL,
+            human_review_flag INTEGER NOT NULL,
+            final_reason TEXT
+        );
+        """)
+
+
 @asynccontextmanager
 async def lifespan(_app):
     init_db()
@@ -126,6 +170,8 @@ app = FastAPI(
 
 @app.get("/health")
 def health():
+    with tx() as c:
+        c.execute("SELECT 1 FROM applications LIMIT 1")
     return {"status": "ok"}
 
 

@@ -76,3 +76,9 @@ def test_malformed_money_is_rejected_with_422(tmp_path, monkeypatch, bad):
         assert client.post("/applications", json=_body(net_monthly_income_eur=bad)).status_code == 422
 
 
+def test_health_returns_ok(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "h.sqlite3")
+    with TestClient(api.app) as client:
+        assert client.get("/health").json() == {"status": "ok"}
+
+
