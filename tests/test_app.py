@@ -82,3 +82,79 @@ def test_health_returns_ok(tmp_path, monkeypatch):
         assert client.get("/health").json() == {"status": "ok"}
 
 
+def _income_for_room(room_eur, housing=1000, obligations=200, norm=1150):
+    return housing + obligations + norm + room_eur
+
+
+def test_term_search_picks_shortest_accepted_even_when_an_earlier_term_is_only_referred(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "t1.sqlite3")
+    _no_context(monkeypatch)
+    with TestClient(api.app, headers=H) as client:
+        res = client.post(
+            "/applications",
+            json=_body(
+                treatment_cost_eur=3000,
+                preferred_term_months=12,
+                net_monthly_income_eur=_income_for_room(200),
+            ),
+        ).json()
+        assert res["outcome"] == "accepted"
+        chosen = res["repayment"]["term_months"]
+        assert chosen > 12
+    with api._db() as db:
+        basis = json.loads(
+            db.execute("SELECT decision_basis FROM applications").fetchone()[0]
+        )
+    considered = basis["terms_considered"]
+    assert considered[0]["term_months"] == 12 and considered[0]["outcome"] == "declined"
+    assert "referred" in [o["outcome"] for o in considered]
+    assert [o["outcome"] for o in considered].count("accepted") == 1
+    assert considered[-1]["term_months"] == chosen
+
+
+def test_term_search_falls_back_to_first_referred_when_nothing_is_accepted(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "t2.sqlite3")
+    _no_context(monkeypatch)
+    _, p60, _ = api.build_schedule(500_000, 60)
+    room_eur = Decimal(int(p60 * 0.95)) / 100   # room is 5% below the 60-month instalment
+    with TestClient(api.app, headers=H) as client:
+        res = client.post(
+            "/applications",
+            json=_body(
+                treatment_cost_eur=5000,
+                preferred_term_months=6,
+                net_monthly_income_eur=float(_income_for_room(room_eur)),
+            ),
+        ).json()
+        assert res["outcome"] == "referred"
+    with api._db() as db:
+        basis = json.loads(
+            db.execute("SELECT decision_basis FROM applications").fetchone()[0]
+        )
+    outcomes = [o["outcome"] for o in basis["terms_considered"]]
+    assert "accepted" not in outcomes
+    first_referred = next(o for o in basis["terms_considered"] if o["outcome"] == "referred")
+    assert basis["selected_term_months"] == first_referred["term_months"]
+
+
+def test_term_note_explains_a_changed_term_to_the_applicant(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "n.sqlite3")
+    _no_context(monkeypatch)
+    with TestClient(api.app, headers=H) as client:
+        res = client.post(
+            "/applications",
+            json=_body(
+                treatment_cost_eur=3000,
+                preferred_term_months=12,
+                net_monthly_income_eur=_income_for_room(200),
+            ),
+        ).json()
+        assert res["requested_term_months"] == 12
+        assert res["repayment"]["term_months"] > 12
+        assert "You asked for 12 months" in res["term_note"]
+
+

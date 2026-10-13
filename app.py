@@ -194,15 +194,21 @@ def _repayment(row) -> dict:
 
 
 def _applicant_view(row) -> dict:
-    """What the applicant may see: offer and status. No internal flags or audit data."""
     requested = json.loads(row["request_json"])["preferred_term_months"]
+    note = None
+    if row["outcome"] != "declined" and row["selected_term"] != requested:
+        note = (
+            f"You asked for {requested} months. "
+            f"A term of {row['selected_term']} months keeps the monthly "
+            f"instalment within your budget, so that is what is shown."
+        )
     return {
         "id": row["id"],
         "created_at": row["created_at"],
         "outcome": row["outcome"],
-        "applicant_message": None,          # filled in chunk 7
+        "applicant_message": None,       # filled in chunk 7
         "requested_term_months": requested,
-        "term_note": None,                  # filled in chunk 6
+        "term_note": note,
         "repayment": _repayment(row),
     }
 
@@ -243,13 +249,40 @@ def create_application(data: Intake):
         - norm
     )
 
-    # Preferred term only (term search loop added in chunk 6)
-    term = data.preferred_term_months
-    sched, payment, total = build_schedule(requested_principal, term)
-    outcome = determine_outcome(payment, room)
-    system_outcome = outcome
+    # Term search.
+    # A longer term can only lower the instalment, so shorter terms than the
+    # preference can never help and are not tried.
+    # Walk from the preferred term up to 60 months:
+    #   - take the shortest term that is *accepted*
+    #   - if none, fall back to the shortest term that is *referred*
+    #   - if none, decline (showing the preferred term)
+    options = []
+    selected = None
+    fallback_referred = None
 
+    for term in range(data.preferred_term_months, 61):
+        sched, payment, total = build_schedule(requested_principal, term)
+        outcome = determine_outcome(payment, room)
+        options.append({"term_months": term, "payment_cents": payment, "outcome": outcome})
+        if outcome == "accepted":
+            selected = (term, sched, payment, total, outcome)
+            break
+        if outcome == "referred" and fallback_referred is None:
+            fallback_referred = (term, sched, payment, total, outcome)
+
+    if selected is None:
+        selected = fallback_referred
+    if selected is None:
+        term = data.preferred_term_months
+        sched, payment, total = build_schedule(requested_principal, term)
+        outcome = "declined"
+    else:
+        term, sched, payment, total, outcome = selected
+
+    system_outcome = outcome
     context = summarize_context(data.additional_context)
+    if context["human_review"] and outcome == "accepted":
+        outcome = "referred"
 
     request_record = data.model_dump(mode="json", exclude={"additional_context"})
     request_record["additional_context"] = {
@@ -259,11 +292,28 @@ def create_application(data: Intake):
     }
 
     basis = {
+        "rule": (
+            "available room = net monthly income - housing costs "
+            "- existing obligations - household living norm"
+        ),
         "norm_cents": norm,
         "available_room_cents": room,
         "system_outcome_before_context_flag": system_outcome,
+        "thresholds": {
+            "accept": "payment <= available room",
+            "refer": "excess <= 10% of positive available room",
+            "decline": "otherwise",
+        },
+        "interest_rate_annual": "0.089",
+        "preferred_term_months": data.preferred_term_months,
         "selected_term_months": term,
-        "terms_considered": [{"term_months": term, "payment_cents": payment, "outcome": outcome}],
+        "term_selection": (
+            "terms from the preferred term up to 60 months are tried in order; "
+            "shortest accepted term wins, else shortest referred term, "
+            "else decline at the preferred term"
+        ),
+        "terms_considered": options,
+        "context_review_flag": context["human_review"],
     }
 
     app_id = str(uuid.uuid4())
