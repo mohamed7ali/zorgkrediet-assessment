@@ -1,0 +1,57 @@
+@host = http://127.0.0.1:8000
+@key = demo-key-1
+
+### Health
+GET {{host}}/health
+
+### Create an application (applicant view).
+### €3,000 over 12 months does not fit this budget, so the term is extended.
+POST {{host}}/applications
+Content-Type: application/json
+
+{
+  "treatment": "dental",
+  "treatment_cost_eur": 3000,
+  "preferred_term_months": 12,
+  "net_monthly_income_eur": 2550,
+  "housing_costs_eur": 1000,
+  "existing_obligations_eur": 200,
+  "household": "single",
+  "additional_context": "My work contract is temporary and ends in six months."
+}
+
+### Applicant view: replace ID
+GET {{host}}/applications/REPLACE-WITH-ID
+
+### Employee: full dossier (answers, decision basis, audit events)
+GET {{host}}/applications/REPLACE-WITH-ID/dossier
+X-API-Key: {{key}}
+
+### Employee: verify the audit hash chain
+GET {{host}}/applications/REPLACE-WITH-ID/audit/verify
+X-API-Key: {{key}}
+
+### Employee: override (employee id comes from the key, not the body)
+POST {{host}}/applications/REPLACE-WITH-ID/override
+X-API-Key: {{key}}
+Content-Type: application/json
+
+{
+  "outcome": "accepted",
+  "reason": "Contract extension letter seen and verified."
+}
+
+### A decline (zero income): shows the decline message
+POST {{host}}/applications
+Content-Type: application/json
+
+{
+  "treatment": "eye",
+  "treatment_cost_eur": 25000,
+  "preferred_term_months": 6,
+  "net_monthly_income_eur": 0,
+  "housing_costs_eur": 1000,
+  "existing_obligations_eur": 200,
+  "household": "single",
+  "additional_context": ""
+}
