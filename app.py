@@ -336,9 +336,33 @@ def _dossier_view(row, audits) -> dict:
 
 
 def summarize_context(text: str) -> dict:
-    """Stub — replaced in chunk 13."""
-    return {"summary": "", "human_review": False, "source": "empty", "model": None}
+    """Exactly one model request (Gemini). The raw applicant text is never persisted.
 
+    Every failure path returns human_review=True: if the model is unavailable,
+    blocked, or malformed, the application goes to a person, never to automatic acceptance.
+    """
+    if not text.strip():
+        return {
+            "summary": "No additional context provided.",
+            "human_review": False,
+            "source": "empty",
+            "model": None,
+        }
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return {
+            "summary": "Additional context was provided; review the applicant's statement.",
+            "human_review": True,
+            "source": "stub",
+            "model": None,
+        }
+    # Real Gemini call added in chunk 13
+    return {
+        "summary": "Additional context was provided; review the applicant's statement.",
+        "human_review": True,
+        "source": "stub",
+        "model": None,
+    }
 
 @asynccontextmanager
 async def lifespan(_app):

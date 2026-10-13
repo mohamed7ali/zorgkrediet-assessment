@@ -340,3 +340,10 @@ def test_verify_reports_position_not_global_seq_and_catches_direct_outcome_edit(
         }
 
     
+def test_no_key_and_empty_text_paths(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    assert api.summarize_context("   ")["human_review"] is False
+    stub = api.summarize_context("some text")
+    assert stub["source"] == "stub" and stub["human_review"] is True
+
+
