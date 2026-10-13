@@ -155,6 +155,63 @@ def init_db() -> None:
         """)
 
 
+QUESTIONNAIRE = {
+    "version": "1",
+    "questions": [
+        {"field": "treatment", "prompt": "Type of treatment",
+         "choices": ["dental", "eye", "orthodontic", "other"]},
+        {"field": "treatment_cost_eur", "prompt": "Cost of the treatment (€500–€25,000)", "unit": "EUR"},
+        {"field": "preferred_term_months", "prompt": "Preferred repayment term in months (6–60)", "unit": "months"},
+        {"field": "net_monthly_income_eur", "prompt": "Net monthly income", "unit": "EUR/month"},
+        {"field": "housing_costs_eur", "prompt": "Monthly housing costs (rent or mortgage)", "unit": "EUR/month"},
+        {"field": "existing_obligations_eur",
+         "prompt": "Total monthly payments on existing loans and credit", "unit": "EUR/month"},
+        {"field": "household", "prompt": "Household situation", "choices": list(NORMS)},
+        {"field": "additional_context",
+         "prompt": "Is there anything else we should know about your situation?",
+         "retention": "raw answer discarded after assessment"},
+    ],
+}
+
+
+def _fetch(application_id: str):
+    with tx() as c:
+        row = c.execute(
+            "SELECT * FROM applications WHERE id=?", (application_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Application not found")
+    return row, []
+
+
+def _repayment(row) -> dict:
+    return {
+        "term_months": row["selected_term"],
+        "monthly_payment_eur": money(row["payment_cents"]),
+        "total_repaid_eur": money(row["total_repaid_cents"]),
+        "schedule": json.loads(row["schedule_json"]),
+    }
+
+
+def _applicant_view(row) -> dict:
+    """What the applicant may see: offer and status. No internal flags or audit data."""
+    requested = json.loads(row["request_json"])["preferred_term_months"]
+    return {
+        "id": row["id"],
+        "created_at": row["created_at"],
+        "outcome": row["outcome"],
+        "applicant_message": None,          # filled in chunk 7
+        "requested_term_months": requested,
+        "term_note": None,                  # filled in chunk 6
+        "repayment": _repayment(row),
+    }
+
+
+def summarize_context(text: str) -> dict:
+    """Stub — replaced in chunk 13."""
+    return {"summary": "", "human_review": False, "source": "empty", "model": None}
+
+
 @asynccontextmanager
 async def lifespan(_app):
     init_db()
@@ -173,5 +230,66 @@ def health():
     with tx() as c:
         c.execute("SELECT 1 FROM applications LIMIT 1")
     return {"status": "ok"}
+
+
+@app.post("/applications", status_code=201)
+def create_application(data: Intake):
+    requested_principal = cents(data.treatment_cost_eur)
+    norm = NORMS[data.household]
+    room = (
+        cents(data.net_monthly_income_eur)
+        - cents(data.housing_costs_eur)
+        - cents(data.existing_obligations_eur)
+        - norm
+    )
+
+    # Preferred term only (term search loop added in chunk 6)
+    term = data.preferred_term_months
+    sched, payment, total = build_schedule(requested_principal, term)
+    outcome = determine_outcome(payment, room)
+    system_outcome = outcome
+
+    context = summarize_context(data.additional_context)
+
+    request_record = data.model_dump(mode="json", exclude={"additional_context"})
+    request_record["additional_context"] = {
+        "asked": True,
+        "provided": bool(data.additional_context.strip()),
+        "raw_text_retained": False,
+    }
+
+    basis = {
+        "norm_cents": norm,
+        "available_room_cents": room,
+        "system_outcome_before_context_flag": system_outcome,
+        "selected_term_months": term,
+        "terms_considered": [{"term_months": term, "payment_cents": payment, "outcome": outcome}],
+    }
+
+    app_id = str(uuid.uuid4())
+    created = now_iso()
+
+    with tx() as c:
+        c.execute(
+            "INSERT INTO applications VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                app_id, created,
+                json.dumps(request_record, ensure_ascii=False),
+                outcome, system_outcome,
+                json.dumps(basis),
+                term, payment, total,
+                json.dumps(sched),
+                context["summary"],
+                int(context["human_review"]),
+                None,
+            ),
+        )
+
+    return _applicant_view(_fetch(app_id)[0])
+
+
+@app.get("/applications/{application_id}")
+def get_application(application_id: str):
+    return _applicant_view(_fetch(application_id)[0])
 
 
