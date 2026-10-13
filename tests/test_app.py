@@ -158,3 +158,29 @@ def test_term_note_explains_a_changed_term_to_the_applicant(tmp_path, monkeypatc
         assert "You asked for 12 months" in res["term_note"]
 
 
+def test_term_extension_preferred_and_decline_message(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "term.sqlite3")
+    _no_context(monkeypatch)
+    with TestClient(api.app, headers=H) as client:
+        body = {
+            "treatment": "eye",
+            "treatment_cost_eur": 25000,
+            "preferred_term_months": 6,
+            "net_monthly_income_eur": 3000,
+            "housing_costs_eur": 1000,
+            "existing_obligations_eur": 200,
+            "household": "single",
+            "additional_context": "",
+        }
+        response = client.post("/applications", json=body)
+        assert response.status_code == 201
+        dossier = response.json()
+        assert dossier["repayment"]["term_months"] >= 6
+        assert dossier["repayment"]["schedule"][-1]["closing_balance_eur"] == "0.00"
+        body["net_monthly_income_eur"] = 0
+        declined = client.post("/applications", json=body).json()
+        assert declined["outcome"] == "declined"
+        assert "unable to approve" in declined["applicant_message"]
+        assert "up to 60 months" in declined["applicant_message"]
+
+

@@ -33,6 +33,36 @@ NORMS = {
 CENT = Decimal("0.01")
 
 
+# Wording shown to applicants. The exact text and its version are written into
+# the audit trail, so a regulator can see what an applicant was told even after
+# this copy is later edited.
+APPLICANT_MESSAGES = {
+    "declined": {
+        "version": "declined-v2",
+        "text": (
+            "We're sorry, but based on the information provided, we're unable to approve "
+            "this application. This decision is about the monthly affordability of the "
+            "repayments, not about how important your treatment is. We also checked longer "
+            "repayment terms, up to 60 months, and none of them fit within your current "
+            "monthly budget. If anything we used is inaccurate, or your circumstances change, "
+            "please contact us. We can explain the decision, look at your figures again, and "
+            "talk through what options may be available."
+        ),
+    },
+    "referred": {
+        "version": "referred-v1",
+        "text": (
+            "Thank you for your application. We can't give you a final answer yet: one of our "
+            "employees will review it first. We'll be in touch about the next step."
+        ),
+    },
+}
+
+
+def applicant_message(outcome: str) -> dict | None:
+    return APPLICANT_MESSAGES.get(outcome)
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -206,7 +236,7 @@ def _applicant_view(row) -> dict:
         "id": row["id"],
         "created_at": row["created_at"],
         "outcome": row["outcome"],
-        "applicant_message": None,       # filled in chunk 7
+        "applicant_message": (applicant_message(row["outcome"]) or {}).get("text"),
         "requested_term_months": requested,
         "term_note": note,
         "repayment": _repayment(row),
