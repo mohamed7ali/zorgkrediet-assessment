@@ -274,3 +274,35 @@ def test_employee_endpoints_require_a_valid_key_and_applicant_view_is_open(
         )
 
 
+def test_two_employees_overrides_are_attributed_and_previous_outcome_is_exact(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "o.sqlite3")
+    _no_context(monkeypatch)
+    with TestClient(api.app, headers=H) as client:
+        app_id = client.post("/applications", json=_body()).json()["id"]   # accepted
+        client.post(
+            f"/applications/{app_id}/override",
+            json={"outcome": "declined", "reason": "Payslip does not match."},
+        )
+        last = client.post(
+            f"/applications/{app_id}/override",
+            headers={"X-API-Key": "test-key-2"},
+            json={"outcome": "referred", "reason": "Second look needed."},
+        ).json()
+        events = [
+            (
+                e["event_type"],
+                e["payload"].get("employee_id"),
+                e["payload"].get("previous_outcome"),
+                e["payload"].get("new_outcome"),
+            )
+            for e in last["audit_events"]
+        ]
+        assert events[1:] == [
+            ("employee_override", "emp-1", "accepted", "declined"),
+            ("employee_override", "emp-2", "declined", "referred"),
+        ]
+        assert client.get(f"/applications/{app_id}/audit/verify").json()["valid"] is True
+
+

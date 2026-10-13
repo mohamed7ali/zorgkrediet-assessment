@@ -141,6 +141,11 @@ class Intake(BaseModel):
         return value
 
 
+class Override(BaseModel):
+    outcome: Literal["accepted", "referred", "declined"]
+    reason: str = Field(min_length=5, max_length=2000)
+
+
 def _db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -479,6 +484,33 @@ def get_application(application_id: str):
 
 @app.get("/applications/{application_id}/dossier")
 def get_dossier(application_id: str, _employee: str = Depends(current_employee)):
+    return _dossier_view(*_fetch(application_id))
+
+
+@app.post("/applications/{application_id}/override")
+def override_application(
+    application_id: str,
+    data: Override,
+    employee_id: str = Depends(current_employee),
+):
+    with tx(immediate=True) as c:   # write lock first → previous_outcome is always real
+        row = c.execute(
+            "SELECT outcome FROM applications WHERE id=?", (application_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Application not found")
+        before = row["outcome"]
+        c.execute(
+            "UPDATE applications SET outcome=?, final_reason=? WHERE id=?",
+            (data.outcome, data.reason, application_id),
+        )
+        _audit(c, application_id, "employee_override", {
+            "employee_id": employee_id,
+            "previous_outcome": before,
+            "new_outcome": data.outcome,
+            "reason": data.reason,
+            "applicant_message": applicant_message(data.outcome),
+        })
     return _dossier_view(*_fetch(application_id))
 
 
