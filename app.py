@@ -352,23 +352,6 @@ app = FastAPI(
 def health():
     with tx() as c:
         c.execute("SELECT 1 FROM applications LIMIT 1")
-        _audit(c, app_id, "application_assessed", {
-        "created_at": created,
-        "questionnaire": QUESTIONNAIRE,
-        "answers": request_record,
-        "system_outcome": system_outcome,
-        "outcome_after_context_flag": outcome,
-        "decision_basis": basis,
-        "monthly_payment_cents": payment,
-        "total_repaid_cents": total,
-        "schedule": sched,
-        "context_summary": context["summary"],
-        "human_review_flag": context["human_review"],
-        "context_source": context["source"],
-        "context_model": context.get("model"),
-        "context_prompt_version": CONTEXT_PROMPT_VERSION,   # defined in chunk 13, use "stub" for now
-        "applicant_message": applicant_message(outcome),
-    })
     return {"status": "ok"}
 
 
@@ -468,6 +451,23 @@ def create_application(data: Intake):
                 None,
             ),
         )
+        _audit(c, app_id, "application_assessed", {
+            "created_at": created,
+            "questionnaire": QUESTIONNAIRE,
+            "answers": request_record,
+            "system_outcome": system_outcome,
+            "outcome_after_context_flag": outcome,
+            "decision_basis": basis,
+            "monthly_payment_cents": payment,
+            "total_repaid_cents": total,
+            "schedule": sched,
+            "context_summary": context["summary"],
+            "human_review_flag": context["human_review"],
+            "context_source": context["source"],
+            "context_model": context.get("model"),
+            "context_prompt_version": CONTEXT_PROMPT_VERSION,
+            "applicant_message": applicant_message(outcome),
+        })
 
     return _applicant_view(_fetch(app_id)[0])
 
