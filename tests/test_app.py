@@ -256,3 +256,32 @@ def test_application_audit_override_and_privacy(tmp_path, monkeypatch):
         assert client.get(f"/applications/{app_id}/audit/verify").json()["valid"] is False
 
 
+def test_employee_endpoints_require_a_valid_key_and_applicant_view_is_open(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "a.sqlite3")
+    _no_context(monkeypatch)
+    with TestClient(api.app) as anon:           # no credential
+        app_id = anon.post("/applications", json=_body()).json()["id"]
+        assert anon.get(f"/applications/{app_id}").status_code == 200
+        for method, url in (
+            ("get", f"/applications/{app_id}/dossier"),
+            ("get", f"/applications/{app_id}/audit/verify"),
+        ):
+            assert getattr(anon, method)(url).status_code == 401
+        body = {"outcome": "accepted", "reason": "Because I said so."}
+        assert anon.post(f"/applications/{app_id}/override", json=body).status_code == 401
+        assert (
+            anon.post(
+                f"/applications/{app_id}/override",
+                json=body,
+                headers={"X-API-Key": "wrong"},
+            ).status_code
+            == 401
+        )
+        monkeypatch.delenv("EMPLOYEE_API_KEYS")
+        assert (
+            anon.get(f"/applications/{app_id}/dossier", headers=H).status_code == 503
+        )
+
+    

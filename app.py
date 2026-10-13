@@ -199,6 +199,27 @@ def init_db() -> None:
         """)
 
 
+def _employee_keys() -> dict[str, str]:
+    """EMPLOYEE_API_KEYS="key1:emp-001,key2:emp-002" — prototype stand-in for real SSO."""
+    pairs = (
+        item.split(":", 1)
+        for item in os.getenv("EMPLOYEE_API_KEYS", "").split(",")
+        if ":" in item
+    )
+    return {k.strip(): v.strip() for k, v in pairs if k.strip() and v.strip()}
+
+
+def current_employee(x_api_key: str | None = Header(default=None)) -> str:
+    keys = _employee_keys()
+    if not keys:
+        raise HTTPException(503, "Employee access is not configured (set EMPLOYEE_API_KEYS)")
+    if x_api_key:
+        for key, employee in keys.items():
+            if hmac.compare_digest(key.encode(), x_api_key.encode()):
+                return employee
+    raise HTTPException(401, "Invalid or missing X-API-Key")
+
+
 def _audit(c: sqlite3.Connection, app_id: str, event_type: str, payload: dict) -> None:
     previous = c.execute(
         "SELECT event_hash FROM audit_events WHERE application_id=? ORDER BY seq DESC LIMIT 1",
@@ -278,6 +299,34 @@ def _applicant_view(row) -> dict:
         "requested_term_months": requested,
         "term_note": note,
         "repayment": _repayment(row),
+    }
+
+
+def _dossier_view(row, audits) -> dict:
+    """Employee/compliance view: the full record."""
+    return {
+        "id": row["id"],
+        "created_at": row["created_at"],
+        "answers": json.loads(row["request_json"]),
+        "outcome": row["outcome"],
+        "system_outcome": row["system_outcome"],
+        "decision_basis": json.loads(row["decision_basis"]),
+        "repayment": _repayment(row),
+        "context_summary": row["note_summary"],
+        "human_review_flag": bool(row["human_review_flag"]),
+        "override_reason": row["final_reason"],
+        "applicant_message": (applicant_message(row["outcome"]) or {}).get("text"),
+        "audit_events": [
+            {
+                "seq": a["seq"],
+                "event_type": a["event_type"],
+                "timestamp": a["timestamp"],
+                "previous_hash": a["previous_hash"],
+                "event_hash": a["event_hash"],
+                "payload": json.loads(a["payload_json"]),
+            }
+            for a in audits
+        ],
     }
 
 
@@ -426,5 +475,10 @@ def create_application(data: Intake):
 @app.get("/applications/{application_id}")
 def get_application(application_id: str):
     return _applicant_view(_fetch(application_id)[0])
+
+
+@app.get("/applications/{application_id}/dossier")
+def get_dossier(application_id: str, _employee: str = Depends(current_employee)):
+    return _dossier_view(*_fetch(application_id))
 
 
