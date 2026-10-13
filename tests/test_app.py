@@ -40,3 +40,10 @@ def test_shorter_terms_are_never_tried():
     assert payments == sorted(payments, reverse=True)
 
 
+def test_affordability_boundaries():
+    assert api.determine_outcome(10000, 10000) == "accepted"   # equal → accepted
+    assert api.determine_outcome(11000, 10000) == "referred"   # exactly 10% over → referred
+    assert api.determine_outcome(11001, 10000) == "declined"   # one cent over 10% → declined
+    assert api.determine_outcome(1, 0) == "declined"           # zero room → declined
+
+

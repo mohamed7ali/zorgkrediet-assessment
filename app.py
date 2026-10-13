@@ -63,3 +63,19 @@ def build_schedule(principal_cents: int, months: int) -> tuple[list[dict], int, 
     return rows, cents(regular), cents(principal + total_interest)
 
 
+def determine_outcome(payment: int, room: int) -> str:
+    """
+    payment and room are both in cents.
+
+    Rules:
+      payment <= room                             → accepted
+      room > 0 and excess <= 10% of room          → referred
+      otherwise                                   → declined
+    """
+    if payment <= room:
+        return "accepted"
+    if room > 0 and Decimal(payment - room) / Decimal(room) <= Decimal("0.10"):
+        return "referred"
+    return "declined"
+
+
