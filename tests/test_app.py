@@ -306,3 +306,37 @@ def test_two_employees_overrides_are_attributed_and_previous_outcome_is_exact(
         assert client.get(f"/applications/{app_id}/audit/verify").json()["valid"] is True
 
 
+def test_verify_reports_position_not_global_seq_and_catches_direct_outcome_edit(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "v.sqlite3")
+    _no_context(monkeypatch)
+    with TestClient(api.app, headers=H) as client:
+        first = client.post("/applications", json=_body()).json()["id"]
+        second = client.post("/applications", json=_body()).json()["id"]
+
+        # tamper with the mutable status row only (no audit event written)
+        with api._db() as db:
+            db.execute(
+                "UPDATE applications SET outcome='declined' WHERE id=?", (second,)
+            )
+        result = client.get(f"/applications/{second}/audit/verify").json()
+        assert result["valid"] is False and "does not match" in result["reason"]
+        assert client.get(f"/applications/{first}/audit/verify").json()["valid"] is True
+
+        # tamper with the chain itself; failure must report position 1 even though global seq is 2
+        with api._db() as db:
+            db.execute("DROP TRIGGER audit_no_update")
+            db.execute(
+                "UPDATE audit_events SET payload_json='{}' WHERE application_id=?",
+                (second,),
+            )
+        broken = client.get(f"/applications/{second}/audit/verify").json()
+        assert broken == {
+            "valid": False,
+            "checked_events": 1,
+            "first_invalid_seq": 2,
+            "reason": "hash chain broken",
+        }
+
+    

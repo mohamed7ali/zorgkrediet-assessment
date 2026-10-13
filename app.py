@@ -514,3 +514,53 @@ def override_application(
     return _dossier_view(*_fetch(application_id))
 
 
+@app.get("/applications/{application_id}/audit/verify")
+def verify_audit(application_id: str, _employee: str = Depends(current_employee)):
+    with tx() as c:
+        rows = c.execute(
+            "SELECT * FROM audit_events WHERE application_id=? ORDER BY seq",
+            (application_id,),
+        ).fetchall()
+        if not rows:
+            raise HTTPException(404, "Application or audit history not found")
+
+        expected_previous = "0" * 64
+        for i, row in enumerate(rows, start=1):
+            canonical_hash = hashlib.sha256(
+                f"{expected_previous}|{row['timestamp']}|{row['event_type']}"
+                f"|{row['application_id']}|{row['payload_json']}".encode()
+            ).hexdigest()
+            if row["previous_hash"] != expected_previous or row["event_hash"] != canonical_hash:
+                # seq is a global counter; report position (i) and seq separately
+                return {
+                    "valid": False,
+                    "checked_events": i,
+                    "first_invalid_seq": row["seq"],
+                    "reason": "hash chain broken",
+                }
+            expected_previous = row["event_hash"]
+
+        # The applications row is mutable. Check it still agrees with the last audited decision.
+        app_row = c.execute(
+            "SELECT outcome FROM applications WHERE id=?", (application_id,)
+        ).fetchone()
+        last = json.loads(rows[-1]["payload_json"])
+        expected_outcome = last.get("new_outcome") or last.get("outcome_after_context_flag")
+        if app_row is None or app_row["outcome"] != expected_outcome:
+            return {
+                "valid": False,
+                "checked_events": len(rows),
+                "reason": "applications.outcome does not match the audit trail",
+            }
+
+    return {
+        "valid": True,
+        "checked_events": len(rows),
+        "chain_head": expected_previous,
+        "note": (
+            "Hash chaining detects edits/deletions within this database; "
+            "external anchoring is required to prove against privileged full-database rewrites."
+        ),
+    }
+
+
